@@ -1,15 +1,30 @@
 # Search Tool
 
-An authenticated web search API that normalizes results from Brave, Tavily, Exa, Firecrawl, and Parallel.
+An authenticated web search API for Brave, Tavily, Exa, Firecrawl, and Parallel.
 
-Search requests rotate through providers and fall back on timeouts, HTTP 408, HTTP 429, or HTTP 5xx. Other provider errors fail closed. HTTP 429 applies a provider cooldown using `Retry-After` (60 seconds by default, capped at one hour), and queries over 500 characters skip Firecrawl.
+## Getting Started
 
-## Run
+The Search Tool exposes authenticated `POST /search` requests and normalizes provider results to `title`, `link`, and `snippet`.
+Requests rotate through providers and fall back on timeouts, HTTP 408, HTTP 429, or HTTP 5xx; other provider errors fail closed.
+HTTP 429 applies a provider cooldown using `Retry-After` (60 seconds by default, capped at one hour), and queries over 500 characters skip Firecrawl.
 
-Copy `.env.example` to `.env` and replace every `replace-with-*` value.
+### Kubernetes (recommended)
+
+[`k8s/base/`](k8s/base) contains a Deployment and ClusterIP Service.
+Create a `searchtool-credentials` Secret with the provider keys and client token listed below.
+The `:must-pin` image reference is an unpublished placeholder; the consuming overlay must replace it with an immutable image digest and provide an environment-specific ingress.
+Keep credentials outside Kustomize, restrict ingress to intended clients, and do not use a public LoadBalancer.
+
+The Search Tool requests 64 MiB and is limited to 256 MiB.
+The Deployment uses one replica with the `Recreate` strategy because provider cooldown state is process-local.
+In-progress requests can be interrupted during upgrades.
+
+### Docker Compose
+
+Use the `.env` file configured below.
 
 ```console
-$ docker compose up --build -d
+$ docker compose up --build -d searchtool
 $ curl --fail http://127.0.0.1:38083/health
 $ curl --fail http://127.0.0.1:38083/search \
     -H 'Authorization: Bearer <searchtool-client-token>' \
@@ -17,15 +32,12 @@ $ curl --fail http://127.0.0.1:38083/search \
     -d '{"query":"example search","count":5}'
 ```
 
-The service publishes its port on loopback only. Stop it with `docker compose down`.
-
-## Kubernetes
-
-[`k8s/base/`](k8s/base) contains a Deployment and ClusterIP Service. Create a `searchtool-credentials` Secret with the required provider keys and client token. The `:must-pin` image reference is an unpublished placeholder; the consuming overlay must replace it with an immutable image digest and provide an environment-specific ingress.
-
-The Deployment requests 64 MiB and is limited to 256 MiB. It uses one replica with the `Recreate` strategy because provider cooldown state is process-local. In-progress requests can be interrupted during upgrades.
+Stop the Compose project with `docker compose down`.
+The service publishes its host port on loopback only.
 
 ## Configuration
+
+Copy `.env.example` to `.env` and replace every `replace-with-*` value.
 
 | Variable | Default / requirement | Description |
 | --- | --- | --- |
@@ -38,7 +50,7 @@ The Deployment requests 64 MiB and is limited to 256 MiB. It uses one replica wi
 | `SEARCHTOOL_PARALLEL_API_KEY` | Required | Parallel API key |
 | `SEARCHTOOL_TAVILY_API_KEY` | Required | Tavily API key |
 
-Credentials are read once at startup; restart the service after changing them.
+Credentials are read once at startup; restart the Search Tool after changing them.
 
 ## HTTP API
 
@@ -47,11 +59,31 @@ Credentials are read once at startup; restart the service after changing them.
 | `GET` | `/health`, `/readyz` | None |
 | `POST` | `/search` | Bearer token |
 
-`POST /search` accepts `{"query":"...","count":5}`. Queries are limited to 2048 bytes; count defaults to 5 and is limited to 20. The response is `{"results":[{"title":"...","link":"https://...","snippet":"..."}]}`. Invalid paths return `404`; unsupported methods return `405`.
+`POST /search` accepts `{"query":"...","count":5}`.
+Queries are limited to 2048 bytes; count defaults to 5 and is limited to 20.
+The response is `{"results":[{"title":"...","link":"https://...","snippet":"..."}]}`.
+Invalid paths return `404`; unsupported methods return `405`.
 
 ## Development
 
-Run `make check` for tests, static checks, container validation, and Kubernetes validation. Run `make build` to build the service binary.
+Run `make help` to list available checks and build targets.
+
+```console
+$ make
+
+Quality
+  check        Run Go tests, static checks, container and Kubernetes validation
+  fmt          Format Go source
+
+Development
+  build        Build the Search Tool
+  image        Build the Search Tool image
+  dev          Start the Search Tool (requires .env)
+  down         Stop local Compose services
+
+Help
+  help         Show available commands
+```
 
 ## License
 
