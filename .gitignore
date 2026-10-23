@@ -1,0 +1,5 @@
+.DS_Store
+/build/
+/coverage.out
+/coverage.html
+/.env

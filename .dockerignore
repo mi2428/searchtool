@@ -1,0 +1,8 @@
+.git
+.env
+.env.example
+build
+coverage.out
+coverage.html
+cmd/searchtool/*_test.go
+internal/search/*_test.go
