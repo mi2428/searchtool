@@ -77,7 +77,7 @@ Quality
 
 Development
   build        Build the Search Tool
-  image        Build the Search Tool image
+  image        Build amd64/arm64 images locally (no push)
   dev          Start the Search Tool (requires .env)
   down         Stop local Compose services
 
