@@ -23,8 +23,8 @@ build: ## Build the Search Tool
 	mkdir -p build
 	go build -trimpath -o build/searchtool ./cmd/searchtool
 
-image: ## Build the Search Tool image
-	$(COMPOSE) --env-file .env.example build searchtool
+image: ## Build amd64/arm64 images locally (no push)
+	docker buildx build --platform linux/amd64,linux/arm64 --tag ghcr.io/mi2428/searchtool:latest --load .
 
 dev: ## Start the Search Tool (requires .env)
 	$(COMPOSE) up --build searchtool
