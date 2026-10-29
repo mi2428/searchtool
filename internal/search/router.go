@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -83,6 +84,7 @@ type Router struct {
 	mu              sync.Mutex
 	next            int
 	blockedUntil    map[string]time.Time
+	logger          *slog.Logger
 }
 
 type searchRequest struct {
@@ -108,6 +110,7 @@ type providerFailure struct {
 	retry      bool
 	status     int
 	retryAfter string
+	message    string
 }
 
 func (failure *searchError) Error() string {
@@ -115,14 +118,17 @@ func (failure *searchError) Error() string {
 }
 
 // New validates and builds a router with a fixed, non-configurable provider list.
-func New(clientToken string, keys map[string]string) (*Router, error) {
-	if len(clientToken) < minimumTokenBytes || strings.TrimSpace(clientToken) != clientToken || strings.ContainsAny(clientToken, "\r\n\t ") {
+func New(clientToken string, keys map[string]string, logger *slog.Logger) (*Router, error) {
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+	}
+	if len(clientToken) < minimumTokenBytes || strings.TrimSpace(clientToken) != clientToken || strings.ContainsAny(clientToken, "\r\n	 ") {
 		return nil, errors.New(EnvClientToken + " must be at least 32 bytes without whitespace")
 	}
 	providers := make([]provider, 0, len(providerSpecs))
 	for _, spec := range providerSpecs {
 		key := keys[spec.keyName]
-		if key == "" || strings.TrimSpace(key) != key || strings.ContainsAny(key, "\r\n\t ") {
+		if key == "" || strings.TrimSpace(key) != key || strings.ContainsAny(key, "\r\n	 ") {
 			return nil, errors.New(spec.keyName + " must be set without whitespace")
 		}
 		providers = append(providers, provider{name: spec.name, key: key, endpoint: spec.endpoint})
@@ -133,6 +139,7 @@ func New(clientToken string, keys map[string]string) (*Router, error) {
 		providers:       providers,
 		permits:         make(chan struct{}, maximumConcurrent),
 		blockedUntil:    make(map[string]time.Time, len(providers)),
+		logger:          logger,
 	}, nil
 }
 
@@ -231,6 +238,14 @@ func (router *Router) search(ctx context.Context, query string, count int) ([]Re
 		if failure == nil {
 			return results, nil
 		}
+		router.logger.Warn("provider attempt failed",
+			"provider", provider.name,
+			"retry", failure.retry,
+			"status", failure.status,
+			"retry_after", failure.retryAfter,
+			"message", failure.message,
+			"query_len", len(query),
+		)
 		if failure.status == http.StatusTooManyRequests {
 			router.cooldown(provider.name, retryDelay(failure.retryAfter, time.Now()))
 		}
@@ -301,18 +316,21 @@ func (router *Router) searchProvider(ctx context.Context, provider provider, que
 		parsed.RawQuery = values.Encode()
 		endpoint = parsed.String()
 	} else {
-		payload := map[string]any{"query": query}
+		payload := map[string]any{}
 		switch provider.name {
 		case "tavily":
+			payload["query"] = query
 			payload["max_results"] = count
 			payload["search_depth"] = "basic"
 			payload["include_raw_content"] = false
 			payload["include_images"] = false
 		case "exa":
+			payload["query"] = query
 			payload["type"] = "lite"
 			payload["numResults"] = count
 			payload["contents"] = map[string]any{"highlights": map[string]string{"query": query}}
 		case "firecrawl":
+			payload["query"] = query
 			payload["limit"] = count
 		case "parallel":
 			payload["objective"] = query
@@ -328,7 +346,7 @@ func (router *Router) searchProvider(ctx context.Context, provider provider, que
 	}
 	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
-		return nil, &providerFailure{}
+		return nil, &providerFailure{message: err.Error()}
 	}
 	request.Header.Set("Accept", "application/json")
 	if method == http.MethodPost {
@@ -345,9 +363,9 @@ func (router *Router) searchProvider(ctx context.Context, provider provider, que
 	response, err := router.client.Do(request)
 	if err != nil {
 		if isTimeout(err) {
-			return nil, &providerFailure{retry: true}
+			return nil, &providerFailure{retry: true, message: err.Error()}
 		}
-		return nil, &providerFailure{}
+		return nil, &providerFailure{message: err.Error()}
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusTooManyRequests {
@@ -357,18 +375,19 @@ func (router *Router) searchProvider(ctx context.Context, provider provider, que
 		return nil, &providerFailure{retry: true, status: response.StatusCode}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, &providerFailure{status: response.StatusCode}
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		return nil, &providerFailure{status: response.StatusCode, message: "non-2xx provider response: " + string(body)}
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes+1))
 	if err != nil {
-		return nil, &providerFailure{retry: isTimeout(err)}
+		return nil, &providerFailure{retry: isTimeout(err), message: err.Error()}
 	}
 	if len(data) > maximumResponseBytes {
-		return nil, &providerFailure{}
+		return nil, &providerFailure{message: "response body too large"}
 	}
 	results, err := decodeResults(provider.name, data, count)
 	if err != nil {
-		return nil, &providerFailure{}
+		return nil, &providerFailure{message: err.Error()}
 	}
 	return results, nil
 }
