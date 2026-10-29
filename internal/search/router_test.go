@@ -19,7 +19,7 @@ func newTestRouter(t *testing.T) *Router {
 	for _, spec := range providerSpecs {
 		keys[spec.keyName] = "test-" + spec.name + "-key"
 	}
-	router, err := New(testClientToken, keys)
+	router, err := New(testClientToken, keys, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestNewRequiresEveryCredential(t *testing.T) {
 		keys[spec.keyName] = "test-key"
 	}
 	delete(keys, EnvExaAPIKey)
-	if _, err := New(testClientToken, keys); err == nil {
+	if _, err := New(testClientToken, keys, nil); err == nil {
 		t.Fatal("New() accepted an incomplete provider pool")
 	}
 }

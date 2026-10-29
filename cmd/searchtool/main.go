@@ -42,7 +42,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	for _, name := range providerKeyEnvNames {
 		keys[name] = os.Getenv(name)
 	}
-	router, err := search.New(os.Getenv(search.EnvClientToken), keys)
+	router, err := search.New(os.Getenv(search.EnvClientToken), keys, logger)
 	clear(keys)
 	if err != nil {
 		return err
