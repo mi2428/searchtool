@@ -117,7 +117,7 @@ func (failure *searchError) Error() string {
 	return failure.message
 }
 
-// New validates and builds a router with a fixed, non-configurable provider list.
+// New validates and builds a router from configured providers.
 func New(clientToken string, keys map[string]string, logger *slog.Logger) (*Router, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
@@ -128,10 +128,16 @@ func New(clientToken string, keys map[string]string, logger *slog.Logger) (*Rout
 	providers := make([]provider, 0, len(providerSpecs))
 	for _, spec := range providerSpecs {
 		key := keys[spec.keyName]
-		if key == "" || strings.TrimSpace(key) != key || strings.ContainsAny(key, "\r\n	 ") {
-			return nil, errors.New(spec.keyName + " must be set without whitespace")
+		if key == "" {
+			continue
+		}
+		if strings.TrimSpace(key) != key || strings.ContainsAny(key, "\r\n	 ") {
+			return nil, errors.New(spec.keyName + " must not contain whitespace")
 		}
 		providers = append(providers, provider{name: spec.name, key: key, endpoint: spec.endpoint})
+	}
+	if len(providers) == 0 {
+		return nil, errors.New("at least one search provider API key must be set")
 	}
 	return &Router{
 		client:          &http.Client{Timeout: 20 * time.Second, CheckRedirect: rejectRedirects},

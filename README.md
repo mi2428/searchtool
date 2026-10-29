@@ -37,18 +37,18 @@ The service publishes its host port on loopback only.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and replace every `replace-with-*` value.
+Copy `.env.example` to `.env`, set the client token and at least one provider API key, and leave unused provider keys empty. Only configured providers participate in round-robin searches; startup fails if none are configured.
 
 | Variable | Default / requirement | Description |
 | --- | --- | --- |
-| `SEARCHTOOL_BRAVE_API_KEY` | Required | Brave Search API key |
 | `SEARCHTOOL_CLIENT_TOKEN` | Required | Bearer token of at least 32 bytes |
-| `SEARCHTOOL_EXA_API_KEY` | Required | Exa API key |
-| `SEARCHTOOL_FIRECRAWL_API_KEY` | Required | Firecrawl API key |
 | `SEARCHTOOL_LISTEN_ADDRESS` | `:8081` | HTTP listen address |
 | `SEARCHTOOL_LOCAL_PORT` | `38083` | Docker Compose host port |
-| `SEARCHTOOL_PARALLEL_API_KEY` | Required | Parallel API key |
-| `SEARCHTOOL_TAVILY_API_KEY` | Required | Tavily API key |
+| `SEARCHTOOL_BRAVE_API_KEY` | Optional | Brave Search API key |
+| `SEARCHTOOL_TAVILY_API_KEY` | Optional | Tavily API key |
+| `SEARCHTOOL_EXA_API_KEY` | Optional | Exa API key |
+| `SEARCHTOOL_FIRECRAWL_API_KEY` | Optional | Firecrawl API key |
+| `SEARCHTOOL_PARALLEL_API_KEY` | Optional | Parallel API key |
 
 Credentials are read once at startup; restart the Search Tool after changing them.
 

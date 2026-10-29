@@ -26,14 +26,42 @@ func newTestRouter(t *testing.T) *Router {
 	return router
 }
 
-func TestNewRequiresEveryCredential(t *testing.T) {
-	keys := make(map[string]string, len(providerSpecs))
-	for _, spec := range providerSpecs {
-		keys[spec.keyName] = "test-key"
+func TestNewRequiresAtLeastOneValidProvider(t *testing.T) {
+	for _, keys := range []map[string]string{
+		nil,
+		{EnvBraveAPIKey: ""},
+		{EnvBraveAPIKey: "  "},
+		{EnvBraveAPIKey: "valid", EnvExaAPIKey: "invalid key"},
+	} {
+		if _, err := New(testClientToken, keys, nil); err == nil {
+			t.Fatal("New() accepted invalid provider keys")
+		}
 	}
-	delete(keys, EnvExaAPIKey)
-	if _, err := New(testClientToken, keys, nil); err == nil {
-		t.Fatal("New() accepted an incomplete provider pool")
+}
+
+func TestConfiguredProvidersRotate(t *testing.T) {
+	keys := map[string]string{EnvBraveAPIKey: "brave-key", EnvTavilyAPIKey: "", EnvExaAPIKey: "exa-key"}
+	router, err := New(testClientToken, keys, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"brave", "exa", "brave"} {
+		providers := router.availableProviders()
+		if len(providers) != 2 {
+			t.Fatalf("provider count = %d, want 2", len(providers))
+		}
+		if providers[0].name != want {
+			t.Fatalf("first provider = %s, want %s", providers[0].name, want)
+		}
+	}
+	single, err := New(testClientToken, map[string]string{EnvParallelAPIKey: "parallel-key"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if providers := single.availableProviders(); len(providers) != 1 || providers[0].name != "parallel" {
+			t.Fatal("single configured provider did not rotate")
+		}
 	}
 }
 

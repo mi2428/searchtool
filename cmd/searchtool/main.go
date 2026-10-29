@@ -40,8 +40,11 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 	keys := make(map[string]string, len(providerKeyEnvNames))
 	for _, name := range providerKeyEnvNames {
-		keys[name] = os.Getenv(name)
+		if key := os.Getenv(name); key != "" {
+			keys[name] = key
+		}
 	}
+	providerCount := len(keys)
 	router, err := search.New(os.Getenv(search.EnvClientToken), keys, logger)
 	clear(keys)
 	if err != nil {
@@ -70,7 +73,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		}
 		serverErrors <- err
 	}()
-	logger.Info("search router listening", "address", server.Addr, "providers", 5)
+	logger.Info("search router listening", "address", server.Addr, "providers", providerCount)
 	select {
 	case err := <-serverErrors:
 		return err
