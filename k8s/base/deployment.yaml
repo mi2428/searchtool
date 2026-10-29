@@ -24,42 +24,11 @@ spec:
         runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
-      initContainers:
-        - name: download
-          image: curlimages/curl:latest
-          imagePullPolicy: IfNotPresent
-          command:
-            - sh
-            - -c
-            - |
-              curl -fsSL -o /workspace/searchtool \
-                "https://github.com/mi2428/searchtool/releases/download/${SEARCHTOOL_RELEASE_TAG}/searchtool-linux-amd64" && \
-              chmod 755 /workspace/searchtool
-          env:
-            - name: SEARCHTOOL_RELEASE_TAG
-              value: "v0.1.1"
-          volumeMounts:
-            - name: workspace
-              mountPath: /workspace
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: [ALL]
-            runAsNonRoot: true
-            runAsUser: 65532
-            seccompProfile:
-              type: RuntimeDefault
-          resources:
-            requests:
-              cpu: 50m
-              memory: 32Mi
-            limits:
-              memory: 128Mi
       containers:
         - name: searchtool
-          image: gcr.io/distroless/static-debian13:nonroot
+          image: ghcr.io/mi2428/searchtool:must-pin
           imagePullPolicy: IfNotPresent
-          command: ["/workspace/searchtool"]
+          command: ["/searchtool"]
           ports:
             - name: http
               containerPort: 8081
@@ -70,9 +39,6 @@ spec:
           env:
             - name: SEARCHTOOL_LISTEN_ADDRESS
               value: ":8081"
-          volumeMounts:
-            - name: workspace
-              mountPath: /workspace
           startupProbe:
             httpGet:
               path: /health
@@ -100,6 +66,3 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
-      volumes:
-        - name: workspace
-          emptyDir: {}

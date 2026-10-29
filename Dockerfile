@@ -10,8 +10,7 @@ ARG TARGETOS
 ARG TARGETARCH
 RUN mkdir -p /out && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
-    -tags netgo \
-    -ldflags="-s -w -buildid= -extldflags '-static'" \
+    -ldflags="-s -w -buildid=" \
     -o /out/searchtool \
     ./cmd/searchtool
 
