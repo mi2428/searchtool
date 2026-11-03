@@ -1,5 +1,7 @@
 # Search Tool
 
+[![CI](https://github.com/mi2428/searchtool/actions/workflows/ci.yml/badge.svg)](https://github.com/mi2428/searchtool/actions/workflows/ci.yml)
+
 An authenticated web search API for Brave, Tavily, Exa, Firecrawl, and Parallel.
 
 ## Getting Started
