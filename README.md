@@ -1,4 +1,4 @@
-- [~] # Search Tool
+# Search Tool
 
 [![CI](https://github.com/mi2428/searchtool/actions/workflows/ci.yml/badge.svg)](https://github.com/mi2428/searchtool/actions/workflows/ci.yml)
 
