@@ -105,7 +105,7 @@ type providerFailure struct {
 	retry      bool
 	status     int
 	retryAfter string
-	message    string
+	reason     string
 }
 
 func (failure *searchError) Error() string {
@@ -228,8 +228,7 @@ func (router *Router) search(ctx context.Context, query string, count int) ([]Re
 			"provider", provider.name,
 			"retry", failure.retry,
 			"status", failure.status,
-			"retry_after", failure.retryAfter,
-			"message", failure.message,
+			"reason", failure.reason,
 			"query_len", len(query),
 		)
 		if failure.status == http.StatusTooManyRequests {
@@ -297,7 +296,7 @@ func (router *Router) searchProvider(ctx context.Context, provider provider, que
 		method = http.MethodGet
 		parsed, err := url.Parse(endpoint)
 		if err != nil {
-			return nil, &providerFailure{}
+			return nil, &providerFailure{reason: "request_build_error"}
 		}
 		values := parsed.Query()
 		values.Set("q", query)
@@ -329,13 +328,13 @@ func (router *Router) searchProvider(ctx context.Context, provider provider, que
 		}
 		encoded, err := json.Marshal(payload)
 		if err != nil {
-			return nil, &providerFailure{}
+			return nil, &providerFailure{reason: "request_build_error"}
 		}
 		body = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
-		return nil, &providerFailure{message: err.Error()}
+		return nil, &providerFailure{reason: "request_build_error"}
 	}
 	request.Header.Set("Accept", "application/json")
 	if method == http.MethodPost {
@@ -351,33 +350,29 @@ func (router *Router) searchProvider(ctx context.Context, provider provider, que
 	}
 	response, err := router.client.Do(request)
 	if err != nil {
-		if isTimeout(err) {
-			return nil, &providerFailure{retry: true, message: err.Error()}
-		}
-		return nil, &providerFailure{message: err.Error()}
+		return nil, &providerFailure{retry: isTimeout(err), reason: "transport_error"}
 	}
 	statusCode = response.StatusCode
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusTooManyRequests {
-		return nil, &providerFailure{retry: true, status: response.StatusCode, retryAfter: response.Header.Get("Retry-After")}
+		return nil, &providerFailure{retry: true, status: response.StatusCode, retryAfter: response.Header.Get("Retry-After"), reason: "rate_limited"}
 	}
 	if response.StatusCode == http.StatusRequestTimeout || response.StatusCode >= http.StatusInternalServerError {
-		return nil, &providerFailure{retry: true, status: response.StatusCode}
+		return nil, &providerFailure{retry: true, status: response.StatusCode, reason: "http_error"}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		return nil, &providerFailure{status: response.StatusCode, message: "non-2xx provider response: " + string(body)}
+		return nil, &providerFailure{status: response.StatusCode, reason: "http_error"}
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes+1))
 	if err != nil {
-		return nil, &providerFailure{retry: isTimeout(err), message: err.Error()}
+		return nil, &providerFailure{retry: isTimeout(err), reason: "response_read_error"}
 	}
 	if len(data) > maximumResponseBytes {
-		return nil, &providerFailure{message: "response body too large"}
+		return nil, &providerFailure{reason: "response_too_large"}
 	}
 	results, err := decodeResults(provider.name, data, count)
 	if err != nil {
-		return nil, &providerFailure{message: err.Error()}
+		return nil, &providerFailure{reason: "invalid_response"}
 	}
 	return results, nil
 }
