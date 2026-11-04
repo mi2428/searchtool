@@ -216,6 +216,9 @@ func (router *Router) search(ctx context.Context, query string, count int) ([]Re
 		return nil, &searchError{status: http.StatusServiceUnavailable, code: "providers_cooling_down", message: "all search providers are cooling down", retryAfter: router.retryAfter()}
 	}
 	for _, provider := range providers {
+		if router.coolingDown(provider.name) {
+			continue
+		}
 		if provider.name == "firecrawl" && utf8.RuneCountInString(query) > maximumFirecrawlQueryRunes {
 			// Firecrawl rejects queries over 500 characters; leave them to the other providers.
 			continue
@@ -255,6 +258,12 @@ func (router *Router) availableProviders() []provider {
 		}
 	}
 	return available
+}
+
+func (router *Router) coolingDown(name string) bool {
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	return time.Now().Before(router.blockedUntil[name])
 }
 
 func (router *Router) cooldown(name string, delay time.Duration) {
