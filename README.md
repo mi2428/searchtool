@@ -1,4 +1,4 @@
-# Search Tool
+- [~] # Search Tool
 
 [![CI](https://github.com/mi2428/searchtool/actions/workflows/ci.yml/badge.svg)](https://github.com/mi2428/searchtool/actions/workflows/ci.yml)
 
@@ -8,6 +8,13 @@ A web search API for Brave, Tavily, Exa, Firecrawl, and Parallel, with provider 
 > **No built-in authentication.** Restrict access to a private network (for example, Tailscale ACLs); never expose it publicly.
 
 ## Getting Started
+
+`POST /search` accepts `{"query":"...","count":5}`.
+Queries are limited to 2048 bytes; count defaults to 5 and is limited to 20.
+Invalid paths return `404`; unsupported methods return `405`.
+
+Requests fail over on timeouts, HTTP 408, HTTP 429, or HTTP 5xx; other provider errors fail closed.
+HTTP 429 applies a `Retry-After` cooldown (60 seconds by default, capped at one hour). Queries over 500 characters skip Firecrawl.
 
 ### Kubernetes (recommended)
 
@@ -46,21 +53,6 @@ Only configured providers participate in round-robin searches; startup fails if 
 | `SEARCHTOOL_PARALLEL_API_KEY` | Optional | Parallel API key |
 | `SEARCHTOOL_LISTEN_ADDRESS` | `:8081` | HTTP listen address |
 | `SEARCHTOOL_LOCAL_PORT` | `38083` | Compose host port (loopback only) |
-
-## HTTP API
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/health`, `/readyz` | Health checks |
-| `GET` | `/metrics` | Prometheus metrics |
-| `POST` | `/search` | Search with normalized results |
-
-`POST /search` accepts `{"query":"...","count":5}`.
-Queries are limited to 2048 bytes; count defaults to 5 and is limited to 20.
-Invalid paths return `404`; unsupported methods return `405`.
-
-Requests fail over on timeouts, HTTP 408, HTTP 429, or HTTP 5xx; other provider errors fail closed.
-HTTP 429 applies a `Retry-After` cooldown (60 seconds by default, capped at one hour). Queries over 500 characters skip Firecrawl.
 
 ## Metrics
 
