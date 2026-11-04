@@ -1,89 +1,65 @@
 # Search Tool
 
-An authenticated web search API for Brave, Tavily, Exa, Firecrawl, and Parallel.
+[![CI](https://github.com/mi2428/searchtool/actions/workflows/ci.yml/badge.svg)](https://github.com/mi2428/searchtool/actions/workflows/ci.yml)
+
+A web search API for Brave, Tavily, Exa, Firecrawl, and Parallel, with provider rotation and automatic failover.
+
+> [!CAUTION]
+> **No built-in authentication.** Restrict access to a private network (for example, Tailscale ACLs); never expose it publicly.
 
 ## Getting Started
 
-The Search Tool exposes authenticated `POST /search` requests and normalizes provider results to `title`, `link`, and `snippet`.
-Requests rotate through providers and fall back on timeouts, HTTP 408, HTTP 429, or HTTP 5xx; other provider errors fail closed.
-HTTP 429 applies a provider cooldown using `Retry-After` (60 seconds by default, capped at one hour), and queries over 500 characters skip Firecrawl.
-
 ### Kubernetes (recommended)
 
-[`k8s/base/`](k8s/base) contains a Deployment and ClusterIP Service.
-Create a `searchtool-credentials` Secret with the provider keys and client token listed below.
-The `:must-pin` image reference is an unpublished placeholder; the consuming overlay must replace it with an immutable image digest and provide an environment-specific ingress.
-Keep credentials outside Kustomize, restrict ingress to intended clients, and do not use a public LoadBalancer.
+Use [`k8s/base/`](k8s/base) with:
 
-The Search Tool requests 64 MiB and is limited to 256 MiB.
-The Deployment uses one replica with the `Recreate` strategy because provider cooldown state is process-local.
-In-progress requests can be interrupted during upgrades.
+- A separately managed `searchtool-credentials` Secret containing the provider API keys.
+- An overlay replacing the unpublished `:must-pin` image placeholder with an immutable image digest.
+- Private ingress restricted to intended clients, not a public LoadBalancer.
+
+Upgrades can interrupt in-progress requests.
 
 ### Docker Compose
 
-Use the `.env` file configured below.
-
-```console
-$ docker compose up --build -d searchtool
-$ curl --fail http://127.0.0.1:38083/health
-$ curl --fail http://127.0.0.1:38083/search \
-    -H 'Authorization: Bearer <searchtool-client-token>' \
-    -H 'Content-Type: application/json' \
-    -d '{"query":"example search","count":5}'
+```sh
+cp .env.example .env
 ```
 
-Stop the Compose project with `docker compose down`.
-The service publishes its host port on loopback only.
+Set at least one provider API key in `.env` and leave unused keys empty.
+See [`.env.example`](.env.example) for local settings.
 
-## Configuration
+```sh
+docker compose up --build -d searchtool
+curl --fail http://127.0.0.1:38083/search -H 'Content-Type: application/json' -d '{"query":"example search","count":5}'
+```
 
-Copy `.env.example` to `.env`, set the client token and at least one provider API key, and leave unused provider keys empty. Only configured providers participate in round-robin searches; startup fails if none are configured.
+## Environment Variables
 
-| Variable | Default / requirement | Description |
+Only configured providers participate in round-robin searches; startup fails if none are configured.
+
+| Variable | Default / requirement | Purpose |
 | --- | --- | --- |
-| `SEARCHTOOL_CLIENT_TOKEN` | Required | Bearer token of at least 32 bytes |
-| `SEARCHTOOL_LISTEN_ADDRESS` | `:8081` | HTTP listen address |
-| `SEARCHTOOL_LOCAL_PORT` | `38083` | Docker Compose host port |
 | `SEARCHTOOL_BRAVE_API_KEY` | Optional | Brave Search API key |
 | `SEARCHTOOL_TAVILY_API_KEY` | Optional | Tavily API key |
 | `SEARCHTOOL_EXA_API_KEY` | Optional | Exa API key |
 | `SEARCHTOOL_FIRECRAWL_API_KEY` | Optional | Firecrawl API key |
 | `SEARCHTOOL_PARALLEL_API_KEY` | Optional | Parallel API key |
-
-Credentials are read once at startup; restart the Search Tool after changing them.
+| `SEARCHTOOL_LISTEN_ADDRESS` | `:8081` | HTTP listen address |
+| `SEARCHTOOL_LOCAL_PORT` | `38083` | Compose host port (loopback only) |
 
 ## HTTP API
 
-| Method | Path | Authentication |
+| Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health`, `/readyz` | None |
-| `POST` | `/search` | Bearer token |
+| `GET` | `/health`, `/readyz` | Health checks |
+| `POST` | `/search` | Search with normalized results |
 
 `POST /search` accepts `{"query":"...","count":5}`.
 Queries are limited to 2048 bytes; count defaults to 5 and is limited to 20.
-The response is `{"results":[{"title":"...","link":"https://...","snippet":"..."}]}`.
 Invalid paths return `404`; unsupported methods return `405`.
 
-## Development
-
-Run `make help` to list available checks and build targets.
-
-```console
-$ make
-
-Quality
-  check        Run Go tests, static checks, container and Kubernetes validation
-  fmt          Format Go source
-
-Development
-  build        Build the Search Tool
-  image        Build amd64/arm64 images locally (no push)
-  dev          Start the Search Tool (requires .env)
-  down         Stop local Compose services
-
-Help
-  help         Show available commands
-```
+Requests fail over on timeouts, HTTP 408, HTTP 429, or HTTP 5xx; other provider errors fail closed.
+HTTP 429 applies a `Retry-After` cooldown (60 seconds by default, capped at one hour). Queries over 500 characters skip Firecrawl.
 
 ## License
 
