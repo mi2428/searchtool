@@ -79,6 +79,7 @@ type Router struct {
 	next         int
 	blockedUntil map[string]time.Time
 	logger       *slog.Logger
+	metrics      searchMetrics
 }
 
 type searchRequest struct {
@@ -136,10 +137,11 @@ func New(keys map[string]string, logger *slog.Logger) (*Router, error) {
 		permits:      make(chan struct{}, maximumConcurrent),
 		blockedUntil: make(map[string]time.Time, len(providers)),
 		logger:       logger,
+		metrics:      newSearchMetrics(providers),
 	}, nil
 }
 
-// ServeHTTP exposes health checks and POST /search requests.
+// ServeHTTP exposes health checks, metrics, and POST /search requests.
 func (router *Router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	switch request.URL.Path {
 	case "/health", "/readyz":
@@ -149,39 +151,44 @@ func (router *Router) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		}
 		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
 		return
-	case "/search":
-		if request.Method != http.MethodPost {
-			writer.Header().Set("Allow", http.MethodPost)
+	case "/metrics":
+		if request.Method != http.MethodGet {
+			writer.Header().Set("Allow", http.MethodGet)
 			writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", "")
 			return
 		}
+		router.serveMetrics(writer)
+	case "/search":
+		router.recordRequest(router.serveSearch(writer, request))
 	default:
 		writeError(writer, http.StatusNotFound, "not_found", "not found", "")
-		return
+	}
+}
+
+func (router *Router) serveSearch(writer http.ResponseWriter, request *http.Request) int {
+	if request.Method != http.MethodPost {
+		writer.Header().Set("Allow", http.MethodPost)
+		return writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", "")
 	}
 	select {
 	case router.permits <- struct{}{}:
 		defer func() { <-router.permits }()
 	default:
-		writeError(writer, http.StatusServiceUnavailable, "busy", "search router is at capacity", "1")
-		return
+		return writeError(writer, http.StatusServiceUnavailable, "busy", "search router is at capacity", "1")
 	}
 	request.Body = http.MaxBytesReader(writer, request.Body, maximumRequestBytes)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	var input searchRequest
 	if err := decoder.Decode(&input); err != nil {
-		writeRequestDecodeError(writer, err, "request must contain a valid JSON query")
-		return
+		return writeRequestDecodeError(writer, err, "request must contain a valid JSON query")
 	}
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
-		writeRequestDecodeError(writer, err, "request must contain exactly one JSON object")
-		return
+		return writeRequestDecodeError(writer, err, "request must contain exactly one JSON object")
 	}
 	input.Query = strings.TrimSpace(input.Query)
 	if input.Query == "" || len(input.Query) > maximumQueryBytes || input.Count < 0 || input.Count > maximumResults {
-		writeError(writer, http.StatusBadRequest, "invalid_request", "query must be non-empty and count must be between 0 and 20", "")
-		return
+		return writeError(writer, http.StatusBadRequest, "invalid_request", "query must be non-empty and count must be between 0 and 20", "")
 	}
 	if input.Count == 0 {
 		input.Count = 5
@@ -189,21 +196,18 @@ func (router *Router) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 	results, err := router.search(request.Context(), input.Query, input.Count)
 	if err != nil {
 		if failure, ok := errors.AsType[*searchError](err); ok {
-			writeError(writer, failure.status, failure.code, failure.message, failure.retryAfter)
-			return
+			return writeError(writer, failure.status, failure.code, failure.message, failure.retryAfter)
 		}
-		writeError(writer, http.StatusBadGateway, "upstream_error", "search provider failed", "")
-		return
+		return writeError(writer, http.StatusBadGateway, "upstream_error", "search provider failed", "")
 	}
-	writeJSON(writer, http.StatusOK, map[string][]Result{"results": results})
+	return writeJSON(writer, http.StatusOK, map[string][]Result{"results": results})
 }
 
-func writeRequestDecodeError(writer http.ResponseWriter, err error, message string) {
+func writeRequestDecodeError(writer http.ResponseWriter, err error, message string) int {
 	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
-		writeError(writer, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large", "")
-		return
+		return writeError(writer, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large", "")
 	}
-	writeError(writer, http.StatusBadRequest, "invalid_request", message, "")
+	return writeError(writer, http.StatusBadRequest, "invalid_request", message, "")
 }
 
 func (router *Router) search(ctx context.Context, query string, count int) ([]Result, error) {
@@ -283,6 +287,9 @@ func (router *Router) retryAfter() string {
 }
 
 func (router *Router) searchProvider(ctx context.Context, provider provider, query string, count int) ([]Result, *providerFailure) {
+	started := time.Now()
+	statusCode := 0
+	defer func() { router.recordProviderAttempt(provider.name, statusCode, time.Since(started)) }()
 	var body io.Reader
 	method := http.MethodPost
 	endpoint := provider.endpoint
@@ -349,6 +356,7 @@ func (router *Router) searchProvider(ctx context.Context, provider provider, que
 		}
 		return nil, &providerFailure{message: err.Error()}
 	}
+	statusCode = response.StatusCode
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode == http.StatusTooManyRequests {
 		return nil, &providerFailure{retry: true, status: response.StatusCode, retryAfter: response.Header.Get("Retry-After")}
@@ -505,16 +513,17 @@ func rejectRedirects(_ *http.Request, _ []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-func writeJSON(writer http.ResponseWriter, status int, value any) {
+func writeJSON(writer http.ResponseWriter, status int, value any) int {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(value)
+	return status
 }
 
-func writeError(writer http.ResponseWriter, status int, code, message, retryAfter string) {
+func writeError(writer http.ResponseWriter, status int, code, message, retryAfter string) int {
 	if retryAfter != "" {
 		writer.Header().Set("Retry-After", retryAfter)
 	}
-	writeJSON(writer, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+	return writeJSON(writer, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }

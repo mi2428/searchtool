@@ -52,6 +52,7 @@ Only configured providers participate in round-robin searches; startup fails if 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health`, `/readyz` | Health checks |
+| `GET` | `/metrics` | Prometheus metrics |
 | `POST` | `/search` | Search with normalized results |
 
 `POST /search` accepts `{"query":"...","count":5}`.
@@ -60,6 +61,19 @@ Invalid paths return `404`; unsupported methods return `405`.
 
 Requests fail over on timeouts, HTTP 408, HTTP 429, or HTTP 5xx; other provider errors fail closed.
 HTTP 429 applies a `Retry-After` cooldown (60 seconds by default, capped at one hour). Queries over 500 characters skip Firecrawl.
+
+## Metrics
+
+`GET /metrics` exposes Prometheus text metrics without authentication; restrict access at the network boundary.
+Search queries, URLs, and credentials are never included in labels. Health checks and scrapes are not counted as searches.
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `searchtool_requests_total` | `status_code` | Completed `/search` requests, including invalid requests and capacity rejections |
+| `searchtool_provider_attempts_total` | `provider`, `status_code` | Provider attempts including failover; status `0` means no HTTP response |
+| `searchtool_provider_duration_seconds` | `provider` | Attempt duration histogram, including body reads and decoding |
+| `searchtool_in_flight_requests` | — | Searches holding a concurrency permit; `/metrics` bypasses this limit |
+| `searchtool_provider_cooldown_seconds` | `provider` | Remaining rate-limit cooldown |
 
 ## License
 
