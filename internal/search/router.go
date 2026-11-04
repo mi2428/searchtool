@@ -1,11 +1,9 @@
-// Package search implements the authenticated multi-provider web search API.
+// Package search implements the multi-provider web search API.
 package search
 
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,9 +17,6 @@ import (
 	"time"
 	"unicode/utf8"
 )
-
-// EnvClientToken is the client bearer-token environment variable.
-const EnvClientToken = "SEARCHTOOL_CLIENT_TOKEN"
 
 // EnvListenAddress is the HTTP listen-address environment variable.
 const EnvListenAddress = "SEARCHTOOL_LISTEN_ADDRESS"
@@ -42,7 +37,6 @@ const EnvFirecrawlAPIKey = "SEARCHTOOL_FIRECRAWL_API_KEY" // #nosec G101 -- envi
 const EnvParallelAPIKey = "SEARCHTOOL_PARALLEL_API_KEY" // #nosec G101 -- environment variable name, not a key value.
 
 const (
-	minimumTokenBytes          = 32
 	maximumQueryBytes          = 2048
 	maximumFirecrawlQueryRunes = 500
 	maximumRequestBytes        = 8192
@@ -75,16 +69,16 @@ type provider struct {
 	endpoint string
 }
 
-// Router handles authenticated searches and keeps provider cooldowns in memory.
+// Router handles searches and keeps provider cooldowns in memory.
+// Access control is enforced by the deployment's network boundary.
 type Router struct {
-	client          *http.Client
-	clientTokenHash [sha256.Size]byte
-	providers       []provider
-	permits         chan struct{}
-	mu              sync.Mutex
-	next            int
-	blockedUntil    map[string]time.Time
-	logger          *slog.Logger
+	client       *http.Client
+	providers    []provider
+	permits      chan struct{}
+	mu           sync.Mutex
+	next         int
+	blockedUntil map[string]time.Time
+	logger       *slog.Logger
 }
 
 type searchRequest struct {
@@ -118,12 +112,9 @@ func (failure *searchError) Error() string {
 }
 
 // New validates and builds a router from configured providers.
-func New(clientToken string, keys map[string]string, logger *slog.Logger) (*Router, error) {
+func New(keys map[string]string, logger *slog.Logger) (*Router, error) {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
-	}
-	if len(clientToken) < minimumTokenBytes || strings.TrimSpace(clientToken) != clientToken || strings.ContainsAny(clientToken, "\r\n	 ") {
-		return nil, errors.New(EnvClientToken + " must be at least 32 bytes without whitespace")
 	}
 	providers := make([]provider, 0, len(providerSpecs))
 	for _, spec := range providerSpecs {
@@ -140,16 +131,15 @@ func New(clientToken string, keys map[string]string, logger *slog.Logger) (*Rout
 		return nil, errors.New("at least one search provider API key must be set")
 	}
 	return &Router{
-		client:          &http.Client{Timeout: 20 * time.Second, CheckRedirect: rejectRedirects},
-		clientTokenHash: sha256.Sum256([]byte(clientToken)),
-		providers:       providers,
-		permits:         make(chan struct{}, maximumConcurrent),
-		blockedUntil:    make(map[string]time.Time, len(providers)),
-		logger:          logger,
+		client:       &http.Client{Timeout: 20 * time.Second, CheckRedirect: rejectRedirects},
+		providers:    providers,
+		permits:      make(chan struct{}, maximumConcurrent),
+		blockedUntil: make(map[string]time.Time, len(providers)),
+		logger:       logger,
 	}, nil
 }
 
-// ServeHTTP exposes health checks and authenticated POST /search requests.
+// ServeHTTP exposes health checks and POST /search requests.
 func (router *Router) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	switch request.URL.Path {
 	case "/health", "/readyz":
@@ -167,11 +157,6 @@ func (router *Router) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		}
 	default:
 		writeError(writer, http.StatusNotFound, "not_found", "not found", "")
-		return
-	}
-	if !router.authenticate(request.Header.Get("Authorization")) {
-		writer.Header().Set("WWW-Authenticate", "Bearer")
-		writeError(writer, http.StatusUnauthorized, "unauthorized", "unauthorized", "")
 		return
 	}
 	select {
@@ -219,15 +204,6 @@ func writeRequestDecodeError(writer http.ResponseWriter, err error, message stri
 		return
 	}
 	writeError(writer, http.StatusBadRequest, "invalid_request", message, "")
-}
-
-func (router *Router) authenticate(header string) bool {
-	scheme, token, found := strings.Cut(header, " ")
-	if !found || !strings.EqualFold(scheme, "Bearer") || token == "" || len(token) > 4096 || strings.ContainsAny(token, " \t\r\n") {
-		return false
-	}
-	digest := sha256.Sum256([]byte(token))
-	return subtle.ConstantTimeCompare(digest[:], router.clientTokenHash[:]) == 1
 }
 
 func (router *Router) search(ctx context.Context, query string, count int) ([]Result, error) {

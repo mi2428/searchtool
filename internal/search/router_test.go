@@ -11,15 +11,13 @@ import (
 	"time"
 )
 
-const testClientToken = "client-token-for-searchtool-tests-0001"
-
 func newTestRouter(t *testing.T) *Router {
 	t.Helper()
 	keys := make(map[string]string, len(providerSpecs))
 	for _, spec := range providerSpecs {
 		keys[spec.keyName] = "test-" + spec.name + "-key"
 	}
-	router, err := New(testClientToken, keys, nil)
+	router, err := New(keys, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +31,7 @@ func TestNewRequiresAtLeastOneValidProvider(t *testing.T) {
 		{EnvBraveAPIKey: "  "},
 		{EnvBraveAPIKey: "valid", EnvExaAPIKey: "invalid key"},
 	} {
-		if _, err := New(testClientToken, keys, nil); err == nil {
+		if _, err := New(keys, nil); err == nil {
 			t.Fatal("New() accepted invalid provider keys")
 		}
 	}
@@ -41,7 +39,7 @@ func TestNewRequiresAtLeastOneValidProvider(t *testing.T) {
 
 func TestConfiguredProvidersRotate(t *testing.T) {
 	keys := map[string]string{EnvBraveAPIKey: "brave-key", EnvTavilyAPIKey: "", EnvExaAPIKey: "exa-key"}
-	router, err := New(testClientToken, keys, nil)
+	router, err := New(keys, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +52,7 @@ func TestConfiguredProvidersRotate(t *testing.T) {
 			t.Fatalf("first provider = %s, want %s", providers[0].name, want)
 		}
 	}
-	single, err := New(testClientToken, map[string]string{EnvParallelAPIKey: "parallel-key"}, nil)
+	single, err := New(map[string]string{EnvParallelAPIKey: "parallel-key"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,26 +63,22 @@ func TestConfiguredProvidersRotate(t *testing.T) {
 	}
 }
 
-func TestServeHTTPHealthAuthenticationAndValidation(t *testing.T) {
+func TestServeHTTPHealthAndValidation(t *testing.T) {
 	router := newTestRouter(t)
 	for _, test := range []struct {
 		name   string
 		method string
 		path   string
-		auth   string
 		body   string
 		want   int
 	}{
 		{name: "health", method: http.MethodGet, path: "/health", want: http.StatusOK},
-		{name: "unauthorized", method: http.MethodPost, path: "/search", body: `{"query":"test"}`, want: http.StatusUnauthorized},
-		{name: "invalid query", method: http.MethodPost, path: "/search", auth: "Bearer " + testClientToken, body: `{"query":" "}`, want: http.StatusBadRequest},
+		{name: "readiness", method: http.MethodGet, path: "/readyz", want: http.StatusOK},
+		{name: "invalid query", method: http.MethodPost, path: "/search", body: `{"query":" "}`, want: http.StatusBadRequest},
 		{name: "wrong method", method: http.MethodGet, path: "/search", want: http.StatusMethodNotAllowed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
-			if test.auth != "" {
-				request.Header.Set("Authorization", test.auth)
-			}
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
 			if response.Code != test.want {
@@ -100,7 +94,6 @@ func TestServeHTTPRejectsWhenAtCapacity(t *testing.T) {
 		router.permits <- struct{}{}
 	}
 	request := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"query":"test"}`))
-	request.Header.Set("Authorization", "Bearer "+testClientToken)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable || response.Header().Get("Retry-After") != "1" {
@@ -115,7 +108,6 @@ func TestServeHTTPReturnsPayloadTooLarge(t *testing.T) {
 		`{"query":"ok"}` + strings.Repeat(" ", maximumRequestBytes),
 	} {
 		request := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(body))
-		request.Header.Set("Authorization", "Bearer "+testClientToken)
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)
 		if response.Code != http.StatusRequestEntityTooLarge {
@@ -415,13 +407,41 @@ func TestSearchDoesNotFailOverOnAuthenticationErrors(t *testing.T) {
 	}
 }
 
-func TestAuthenticationDoesNotAcceptWrongToken(t *testing.T) {
-	router := newTestRouter(t)
-	if router.authenticate("Bearer " + strings.Repeat("x", len(testClientToken))) {
-		t.Fatal("authenticate accepted a different token")
+func TestServeHTTPSearchWithoutClientAuthentication(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Authorization"); got != "Bearer provider-key" {
+			t.Errorf("upstream Authorization = %q, want provider credential", got)
+		}
+		_, _ = writer.Write([]byte(`{"results":[{"title":"Tavily","url":"https://example.com","content":"found"}]}`))
+	}))
+	defer server.Close()
+	router, err := New(map[string]string{EnvTavilyAPIKey: "provider-key"}, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if router.authenticate("Bearer " + testClientToken + " ") {
-		t.Fatal("authenticate accepted whitespace in a token")
+	router.providers[0].endpoint = server.URL
+	for _, test := range []struct {
+		name   string
+		header string
+	}{
+		{name: "no authorization"},
+		{name: "ignored bearer token", header: "Bearer ignored-client-token"},
+		{name: "ignored other scheme", header: "Basic ignored-client-credentials"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"query":"test"}`))
+			if test.header != "" {
+				request.Header.Set("Authorization", test.header)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"results":[{"title":"Tavily","link":"https://example.com","snippet":"found"}]}` {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+			if got := response.Header().Get("WWW-Authenticate"); got != "" {
+				t.Errorf("unexpected authentication challenge: %q", got)
+			}
+		})
 	}
 }
 

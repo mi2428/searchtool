@@ -45,13 +45,12 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		}
 	}
 	providerCount := len(keys)
-	router, err := search.New(os.Getenv(search.EnvClientToken), keys, logger)
+	router, err := search.New(keys, logger)
 	clear(keys)
 	if err != nil {
 		return err
 	}
-	credentialEnvNames := append([]string{search.EnvClientToken}, providerKeyEnvNames...)
-	for _, name := range credentialEnvNames {
+	for _, name := range providerKeyEnvNames {
 		if err := os.Unsetenv(name); err != nil {
 			return fmt.Errorf("remove credential environment variable: %w", err)
 		}
